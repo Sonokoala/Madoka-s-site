@@ -1,0 +1,159 @@
+!pip uninstall alpha_vantage
+
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from alpha_vantage.timeseries import TimeSeries
+from sklearn.preprocessing import RobustScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime, timedelta
+
+class StockAnalyzer:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.ts = TimeSeries(key=self.api_key, output_format='pandas')
+        
+    def get_stock_data(self, symbol):
+        try:
+            # 日足データの取得（15分足は制限があるため）
+            data, _ = self.ts.get_daily(symbol=symbol, outputsize='full')
+            return data
+        except Exception as e:
+            print(f"Error fetching data for {symbol}: {str(e)}")
+            return None
+
+    def analyze_stocks(self, symbol1, symbol2):
+        # データ取得
+        print(f"Fetching data for {symbol1} and {symbol2}...")
+        df1 = self.get_stock_data(symbol1)
+        df2 = self.get_stock_data(symbol2)
+
+        if df1 is None or df2 is None:
+            print("Failed to fetch data for one or both symbols")
+            return
+
+        # 最近1年分のデータに絞る
+        df1 = df1.last('365D')
+        df2 = df2.last('365D')
+
+        # 基本統計量の計算
+        stats1 = self.calculate_statistics(df1, symbol1)
+        stats2 = self.calculate_statistics(df2, symbol2)
+
+        # 結果の表示
+        self.display_analysis(stats1, stats2)
+        
+        # グラフの描画
+        self.plot_comparison(df1, df2, symbol1, symbol2)
+
+    def calculate_statistics(self, df, symbol):
+        stats = {
+            'symbol': symbol,
+            'current_price': df['4. close'][-1],
+            'daily_return': df['4. close'].pct_change().mean() * 100,
+            'volatility': df['4. close'].pct_change().std() * 100,
+            'highest_price': df['2. high'].max(),
+            'lowest_price': df['3. low'].min(),
+            'volume_avg': df['5. volume'].mean(),
+            'price_change_1m': ((df['4. close'][-1] / df['4. close'][-20]) - 1) * 100,
+            'price_change_3m': ((df['4. close'][-1] / df['4. close'][-60]) - 1) * 100,
+            'price_change_6m': ((df['4. close'][-1] / df['4. close'][-120]) - 1) * 100,
+            'rsi': self.calculate_rsi(df['4. close'])[-1]
+        }
+        return stats
+
+    def calculate_rsi(self, prices, period=14):
+        delta = prices.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+
+    def display_analysis(self, stats1, stats2):
+        print("\n=== 詳細分析レポート ===")
+        
+        print(f"\n{stats1['symbol']}の分析:")
+        print(f"現在価格: ${stats1['current_price']:.2f}")
+        print(f"日次リターン平均: {stats1['daily_return']:.2f}%")
+        print(f"ボラティリティ: {stats1['volatility']:.2f}%")
+        print(f"RSI: {stats1['rsi']:.2f}")
+        print(f"1ヶ月の価格変動: {stats1['price_change_1m']:.2f}%")
+        print(f"3ヶ月の価格変動: {stats1['price_change_3m']:.2f}%")
+        print(f"6ヶ月の価格変動: {stats1['price_change_6m']:.2f}%")
+        
+        print(f"\n{stats2['symbol']}の分析:")
+        print(f"現在価格: ${stats2['current_price']:.2f}")
+        print(f"日次リターン平均: {stats2['daily_return']:.2f}%")
+        print(f"ボラティリティ: {stats2['volatility']:.2f}%")
+        print(f"RSI: {stats2['rsi']:.2f}")
+        print(f"1ヶ月の価格変動: {stats2['price_change_1m']:.2f}%")
+        print(f"3ヶ月の価格変動: {stats2['price_change_3m']:.2f}%")
+        print(f"6ヶ月の価格変動: {stats2['price_change_6m']:.2f}%")
+
+        print("\n=== 比較分析 ===")
+        self.compare_stocks(stats1, stats2)
+
+    def compare_stocks(self, stats1, stats2):
+        # リターンの比較
+        if stats1['daily_return'] > stats2['daily_return']:
+            print(f"{stats1['symbol']}の方が高いリターンを示しています")
+        else:
+            print(f"{stats2['symbol']}の方が高いリターンを示しています")
+
+        # リスク（ボラティリティ）の比較
+        if stats1['volatility'] > stats2['volatility']:
+            print(f"{stats1['symbol']}の方が変動性が高くリスクが高い傾向にあります")
+        else:
+            print(f"{stats2['symbol']}の方が変動性が高くリスクが高い傾向にあります")
+
+        # RSIによるオーバーブート/オーバーソールド分析
+        for stats in [stats1, stats2]:
+            if stats['rsi'] > 70:
+                print(f"{stats['symbol']}は現在オーバーブート状態の可能性があります")
+            elif stats['rsi'] < 30:
+                print(f"{stats['symbol']}は現在オーバーソールド状態の可能性があります")
+
+    def plot_comparison(self, df1, df2, symbol1, symbol2):
+        plt.figure(figsize=(15, 10))
+        
+        # 価格推移の比較
+        plt.subplot(2, 1, 1)
+        normalized1 = df1['4. close'] / df1['4. close'].iloc[0] * 100
+        normalized2 = df2['4. close'] / df2['4. close'].iloc[0] * 100
+        
+        plt.plot(normalized1.index, normalized1, label=symbol1)
+        plt.plot(normalized2.index, normalized2, label=symbol2)
+        plt.title('価格推移の比較（基準化）')
+        plt.xlabel('日付')
+        plt.ylabel('基準化価格（%）')
+        plt.legend()
+        plt.grid(True)
+        
+        # ボラティリティの比較
+        plt.subplot(2, 1, 2)
+        vol1 = df1['4. close'].pct_change().rolling(window=20).std() * np.sqrt(252) * 100
+        vol2 = df2['4. close'].pct_change().rolling(window=20).std() * np.sqrt(252) * 100
+        
+        plt.plot(vol1.index, vol1, label=f'{symbol1} ボラティリティ')
+        plt.plot(vol2.index, vol2, label=f'{symbol2} ボラティリティ')
+        plt.title('ボラティリティの推移')
+        plt.xlabel('日付')
+        plt.ylabel('年率ボラティリティ（%）')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.tight_layout()
+        plt.show()
+
+def main():
+    # Alpha VantageのAPIキーを設定
+    API_KEY = '8KT722AZNMPFQ997'  # ここにあなたのAPIキーを入力してください
+    
+    analyzer = StockAnalyzer(API_KEY)
+    analyzer.analyze_stocks('RHT.AX', 'PME.AX')
+
+if __name__ == "__main__":
+    main()
