@@ -1,0 +1,236 @@
+pip install scikit-learn
+
+from tensorflow.keras.layers import GRU
+import yfinance as yf
+from sklearn.preprocessing import RobustScaler
+
+class EnhancedGRUPredictor:
+    def __init__(self, seq_length=60):
+        self.seq_length = seq_length
+        self.feature_scaler = None
+        self.target_scaler = None
+        self.models = []
+
+    def preprocess_data(self, df):
+        # 技術指標の計算
+        df['Returns'] = df['Close'].pct_change()
+        df['SMA_5'] = df['Close'].rolling(window=5).mean()
+        df['SMA_20'] = df['Close'].rolling(window=20).mean()
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
+        df['Volatility'] = df['Returns'].rolling(window=20).std()
+        
+        # RSI
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        # MACD
+        exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = exp1 - exp2
+        df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        
+        # Volume indicators
+        df['Volume_SMA'] = df['Volume'].rolling(window=20).mean()
+        df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA']
+        
+        return df.dropna()
+
+    def create_sequences(self, data):
+        X, y = [], []
+        for i in range(len(data) - self.seq_length):
+            sequence = data.iloc[i:(i + self.seq_length)].values
+            target = data.iloc[i + self.seq_length]['Close']
+            X.append(sequence)
+            y.append(target)
+        return np.array(X), np.array(y)
+
+    def build_model(self, input_shape):
+        model = Sequential([
+            Bidirectional(GRU(128, return_sequences=True,
+                             kernel_regularizer=l2(0.001)),
+                         input_shape=input_shape),
+            BatchNormalization(),
+            Dropout(0.3),
+            
+            Bidirectional(GRU(64, return_sequences=False)),
+            BatchNormalization(),
+            Dropout(0.3),
+            
+            Dense(32, activation='relu'),
+            BatchNormalization(),
+            Dropout(0.2),
+            
+            Dense(16, activation='relu'),
+            Dense(1)
+        ])
+        
+        optimizer = Adam(learning_rate=0.001)
+        model.compile(optimizer=optimizer,
+                     loss='huber',
+                     metrics=['mae', 'mse'])
+        return model
+
+    def train_ensemble(self, X_train, y_train, X_val, y_val, n_models=3):
+        input_shape = (X_train.shape[1], X_train.shape[2])
+        
+        for i in range(n_models):
+            print(f"\nTraining model {i+1}/{n_models}")
+            model = self.build_model(input_shape)
+            
+            callbacks = [
+                EarlyStopping(
+                    monitor='val_loss',
+                    patience=20,
+                    restore_best_weights=True
+                ),
+                ReduceLROnPlateau(
+                    monitor='val_loss',
+                    factor=0.5,
+                    patience=10,
+                    min_lr=0.00001
+                )
+            ]
+            
+            model.fit(
+                X_train, y_train,
+                validation_data=(X_val, y_val),
+                epochs=100,
+                batch_size=32,
+                callbacks=callbacks,
+                verbose=1
+            )
+            
+            self.models.append(model)
+
+    def ensemble_predict(self, X):
+        predictions = np.zeros((X.shape[0], len(self.models)))
+        for i, model in enumerate(self.models):
+            predictions[:, i] = model.predict(X, verbose=0).flatten()
+        return np.mean(predictions, axis=1)
+
+    def evaluate_predictions(self, y_true, y_pred):
+        return {
+            'MAE': mean_absolute_error(y_true, y_pred),
+            'MSE': mean_squared_error(y_true, y_pred),
+            'RMSE': np.sqrt(mean_squared_error(y_true, y_pred)),
+            'R2': r2_score(y_true, y_pred),
+            'MAPE': mean_absolute_percentage_error(y_true, y_pred) * 100
+        }
+
+    def plot_predictions(self, actual, predictions, ticker):
+        plt.figure(figsize=(15, 8))
+        plt.plot(actual, label='Actual', color='blue', alpha=0.7)
+        plt.plot(predictions, label='Predicted', color='red', alpha=0.7)
+        
+        plt.title(f'{ticker} Stock Price Prediction', fontsize=16)
+        plt.xlabel('Time', fontsize=12)
+        plt.ylabel('Price', fontsize=12)
+        plt.legend(fontsize=12)
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
+
+    def plot_error_distribution(self, actual, predictions):
+        errors = actual - predictions
+        
+        plt.figure(figsize=(15, 6))
+        
+        # Error distribution
+        plt.subplot(1, 2, 1)
+        sns.histplot(errors, kde=True)
+        plt.title('Prediction Error Distribution', fontsize=14)
+        plt.xlabel('Error', fontsize=12)
+        plt.ylabel('Frequency', fontsize=12)
+        
+        # Actual vs Predicted
+        plt.subplot(1, 2, 2)
+        plt.scatter(actual, predictions, alpha=0.5)
+        plt.plot([actual.min(), actual.max()], [actual.min(), actual.max()], 'r--', lw=2)
+        plt.title('Actual vs Predicted', fontsize=14)
+        plt.xlabel('Actual Price', fontsize=12)
+        plt.ylabel('Predicted Price', fontsize=12)
+        
+        plt.tight_layout()
+        plt.show()
+
+    def train_and_evaluate(self, ticker, start_date, end_date):
+        print(f"Processing {ticker}...")
+        
+        # データ取得と前処理
+        stock = yf.Ticker(ticker)
+        df = stock.history(start=start_date, end=end_date)
+        if df.empty:
+            print(f"No data found for {ticker}. Skipping...")
+            return None, None, None
+        
+        df = self.preprocess_data(df)
+        
+        # スケーリング
+        self.feature_scaler = RobustScaler()
+        self.target_scaler = RobustScaler().fit(df[['Close']])
+        
+        scaled_data = self.feature_scaler.fit_transform(df)
+        scaled_df = pd.DataFrame(scaled_data, columns=df.columns, index=df.index)
+        
+        # シーケンス作成とデータ分割
+        X, y = self.create_sequences(scaled_df)
+        train_size = int(len(X) * 0.7)
+        val_size = int(len(X) * 0.15)
+        
+        X_train = X[:train_size]
+        y_train = y[:train_size]
+        X_val = X[train_size:train_size+val_size]
+        y_val = y[train_size:train_size+val_size]
+        X_test = X[train_size+val_size:]
+        y_test = y[train_size+val_size:]
+        
+        print(f"Training data shape: {X_train.shape}")
+        print(f"Validation data shape: {X_val.shape}")
+        print(f"Test data shape: {X_test.shape}")
+        
+        # モデル学習と予測
+        self.train_ensemble(X_train, y_train, X_val, y_val)
+        predictions = self.ensemble_predict(X_test)
+        
+        # スケーリングを元に戻す
+        y_test_original = self.target_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
+        predictions_original = self.target_scaler.inverse_transform(predictions.reshape(-1, 1)).flatten()
+        
+        # 評価と可視化
+        metrics = self.evaluate_predictions(y_test_original, predictions_original)
+        self.plot_predictions(y_test_original, predictions_original, ticker)
+        self.plot_error_distribution(y_test_original, predictions_original)
+        
+        return metrics, predictions_original, y_test_original
+
+def main():
+    # モデルのインスタンス化と実行
+    predictor = EnhancedGRUPredictor(seq_length=60)
+    tickers = ["RHT.AX", "PME.AX"]
+    start_date = "2013-01-01"
+    end_date = "2023-12-31"
+    
+    for ticker in tickers:
+        metrics, predictions, actual = predictor.train_and_evaluate(
+            ticker, start_date, end_date
+        )
+        
+        if metrics is not None:
+            # 結果の表示
+            print(f"\nFinal Metrics for {ticker}:")
+            for metric, value in metrics.items():
+                print(f"{metric}: {value:.4f}")
+            
+            # 追加の統計情報
+            print("\nAdditional Statistics:")
+            print(f"Mean Actual Price: {np.mean(actual):.2f}")
+            print(f"Mean Predicted Price: {np.mean(predictions):.2f}")
+            print(f"Standard Deviation of Errors: {np.std(actual - predictions):.2f}")
+            print(f"Maximum Absolute Error: {np.max(np.abs(actual - predictions)):.2f}")
+
+if __name__ == "__main__":
+    main()

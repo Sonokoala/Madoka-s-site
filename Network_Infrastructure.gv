@@ -1,0 +1,8 @@
+// Network Infrastructure
+digraph {
+	A [label="Physical Servers"]
+	B [label="Virtual Machines with Roles"]
+	C [label="Network Components (Switches, Routers)"]
+	A -> B
+	B -> C
+}
