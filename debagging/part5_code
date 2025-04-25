@@ -1,0 +1,35 @@
+print("Please enter your 5 marks below")
+
+# Function to get a valid mark between 0 and 100
+def get_valid_mark(prompt):
+    while True:
+        try:
+            mark = int(input(prompt))
+            print(f"Debug: Raw input received: {mark}")  # デバッグ用のプリントステートメント
+            if 0 <= mark <= 100:
+                return mark
+            else:
+                print("Error: Mark must be between 0 and 100.")
+        except ValueError:
+            print("Error: Please enter a valid integer.")
+
+# Read 5 valid inputs
+mark1 = get_valid_mark("Enter mark 1: ")
+mark2 = get_valid_mark("Enter mark 2: ")
+mark3 = get_valid_mark("Enter mark 3: ")
+mark4 = get_valid_mark("Enter mark 4: ")
+mark5 = get_valid_mark("Enter mark 5: ")
+
+# Create array/list with five marks
+marksList = [mark1, mark2, mark3, mark4, mark5]
+
+# Print the array/list
+print("Marks entered:", marksList)
+
+# Calculate the sum and average
+sumOfMarks = sum(marksList)
+averageOfMarks = sumOfMarks / 5
+
+# Display results
+print("The sum of your marks is:", sumOfMarks)
+print("The average of your marks is:", averageOfMarks)
